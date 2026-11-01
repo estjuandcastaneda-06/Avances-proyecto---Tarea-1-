@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clasificador de monedas colombianas · ESP32-S3</title>
+<style>
+:root{--ink:#17202a;--bg:#f4f6f8;--ac:#0f766e;--rj:#b91c1c;--ln:#cfd6dd;--wa:#b45309}
+@media(prefers-color-scheme:dark){:root{--ink:#e8edf2;--bg:#12181f;--ac:#2dd4bf;--rj:#f87171;--ln:#2b3640;--wa:#fbbf24}}
+*{box-sizing:border-box}body{margin:0;font:15px/1.4 "Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:12px;max-width:980px;margin-inline:auto}
+h1{font-size:20px;margin:0 0 10px}h2{font-size:15px;margin:14px 0 6px}
+.g{display:grid;gap:14px;grid-template-columns:1fr}@media(min-width:760px){.g{grid-template-columns:1.1fr 1fr}}
+#v{display:block;width:100%;border-radius:6px;background:#000;aspect-ratio:4/3;object-fit:cover;outline:4px solid transparent;transition:outline-color .1s}
+#v.fl{outline-color:var(--ac)}#v.rj{outline-color:var(--rj)}
+button,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--ln);border-radius:6px;padding:8px 10px}
+button{cursor:pointer;touch-action:manipulation}input{flex:1;min-width:140px}
+button:focus-visible,input:focus-visible{outline:2px solid var(--ac)}button.p{background:var(--ac);color:#fff;border-color:var(--ac)}
+#live{margin:8px 0 2px;font-weight:600}#bar{height:8px;background:var(--ln);border-radius:4px;overflow:hidden}#bar i{display:block;height:100%;width:0;background:var(--ac);transition:width .1s}
+#res{font-size:26px;font-weight:700;min-height:36px;margin:8px 0}.ok{color:var(--ac)}.no{color:var(--rj)}
+.cl{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--ln);padding:4px 0}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0}small{opacity:.8}
+#th{display:flex;gap:4px;flex-wrap:wrap;margin:6px 0}#th canvas{width:72px;height:54px;border-radius:4px;border:1px solid var(--ln)}
+ol{margin:4px 0;padding-left:20px}
+#estado{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--rj);margin-right:6px}#estado.on{background:var(--ac)}
+#tel .cl b{font-variant-numeric:tabular-nums}
+#log{height:140px;overflow:auto;font:12px/1.4 ui-monospace,Consolas,monospace;border:1px solid var(--ln);border-radius:6px;padding:6px;white-space:pre-wrap}
+</style></head><body>
+<h1>Clasificador de monedas colombianas · ESP32-S3</h1>
+<div class="g"><div>
+<img id="v" crossorigin="anonymous" alt="Video de la ESP32-S3">
+<div id="live">Cámara sin conectar</div><div id="bar"><i id="bi"></i></div>
+<div class="row"><input id="ip" placeholder="IP de la ESP32 (ej. 192.168.1.50)" inputmode="decimal" autocomplete="off"><button class="p" id="bc">1. Conectar ESP32</button></div>
+<div class="row"><button id="bs">Conectar ESP32 (USB, opcional)</button></div>
+<div class="row"><button class="p" id="bn">Reconocer ahora</button><button id="bt">Modo automático: apagado</button></div>
+<div id="res">—</div><small id="st">Escribe la IP de la ESP32 y pulsa “Conectar”.</small>
+<h2>Conteo</h2><div id="cnt"><small>Sin monedas todavía.</small></div>
+</div><div>
+<h2><span id="estado"></span>Datos de la ESP32 (tiempo real)</h2>
+<div id="tel"><small>Sin conexión.</small></div>
+<h2>Probar servo</h2>
+<div class="row"><input type="range" id="sv" min="0" max="180" value="90" aria-label="Grados del servo"><b id="svv">90°</b></div>
+<small>Mueve el deslizador para encontrar los grados de cada caja y ponlos en el código.</small>
+<h2>Registro</h2><div id="log"></div>
+<h2>Cómo usarlo</h2>
+<ol><li>Conecta la ESP32 y escribe su IP. Verás el video de su cámara.</li>
+<li>Entrena: con la moneda bajo la cámara, mantén pulsado “+” de su clase. El recuadro se ilumina y aparece una miniatura por cada foto.</li>
+<li>Entrena “Banda vacía” (sin moneda) y “Otro” (cuero, cartón, monedas extranjeras).</li>
+<li>“Reconocer ahora” lee una vez. El modo automático lee cada moneda nueva. El resultado (A/R) se envía a la ESP32.</li></ol>
+<h2>Fotos tomadas</h2><div id="th"><small>Aquí aparecerán las últimas fotos.</small></div>
+<h2>Entrenamiento</h2>
+<small>20 a 40 fotos por clase, moviendo y girando la moneda (cara y sello).</small>
+<div id="cls"></div>
+<div class="row"><button id="bg">Guardar</button><button id="bl">Cargar</button><button id="bb">Borrar todo</button></div>
+</div></div>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.1/dist/mobilenet.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/knn-classifier@1.2.2/dist/knn-classifier.min.js"></script>
+<script>
+const VACIA="Banda vacía", OTRO="Otro (rechazar)", UMBRAL=0.7;
+const CLASES=[VACIA,OTRO,...[50,100,200,500,1000].flatMap(v=>[v+" nueva",v+" antigua"])];
+const $=id=>document.getElementById(id), v=$("v");
+const knn=knnClassifier.create(); let net,writer,run=false,cand=null,n=0,armed=true,busy=false,tot={},base="",fallos=0,ultCmds=-1,retry;
+const num={}, wait=ms=>new Promise(t=>setTimeout(t,ms));
+const listo=()=>net&&v.naturalWidth>0;
+function log(m){const l=$("log");l.textContent=new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent;if(l.textContent.length>6000)l.textContent=l.textContent.slice(0,5000)}
+function flash(c){v.classList.add(c);setTimeout(()=>v.classList.remove(c),150)}
+function foto(c){const cv=document.createElement("canvas");cv.width=72;cv.height=54;cv.title=c;cv.getContext("2d").drawImage(v,0,0,72,54);
+ const t=$("th");if(t.querySelector("small"))t.innerHTML="";t.append(cv);while(t.children.length>12)t.firstChild.remove()}
+CLASES.forEach(c=>{const d=document.createElement("div");d.className="cl";d.innerHTML=`<span>${c} <small id="n_${c}">0</small></span><button aria-label="Añadir ejemplo de ${c}">+</button>`;
+ const b=d.querySelector("button");let t;
+ const add=()=>{if(!listo()){$("st").textContent="Conecta la ESP32 y espera a que cargue el modelo y el video.";return}
+  try{tf.tidy(()=>knn.addExample(net.infer(v,true),c))}catch(e){$("st").textContent="No se pueden leer los píxeles del video: "+e.message;return}
+  num[c]=(num[c]||0)+1;$("n_"+c).textContent=num[c];flash("fl");foto(c)};
+ b.onpointerdown=()=>{add();t=setInterval(add,200)};["pointerup","pointerleave"].forEach(e=>b["on"+e]=()=>clearInterval(t));$("cls").append(d)});
+
+/* ---------- Conexión con la ESP32 (video + datos) ---------- */
+function abrirStream(){clearTimeout(retry);v.src=base+":81/stream?t="+Date.now()}
+v.onerror=()=>{if(!base)return;$("live").textContent="Sin video, reintentando…";retry=setTimeout(abrirStream,2000)};
+$("ip").value=localStorage.getItem("esp_ip")||"";
+$("bc").onclick=async()=>{
+ const ip=$("ip").value.trim().replace(/^https?:\/\//,"").replace(/[\/:].*$/,"");
+ if(!ip){$("st").textContent="Escribe la IP de la ESP32.";return}
+ base="http://"+ip;localStorage.setItem("esp_ip",ip);fallos=0;ultCmds=-1;
+ try{
+  $("live").textContent="Cargando modelo…";
+  if(!net)net=await mobilenet.load({version:2,alpha:1});
+  abrirStream();log("Conectando a "+base);
+  $("st").textContent="Modelo listo. Esperando video de la ESP32…";$("live").textContent="Entrena para empezar";
+ }catch(e){$("st").textContent="Error: "+e.message}};
+
+async function telemetria(){
+ if(!base)return;
+ try{
+  const r=await fetch(base+"/status",{cache:"no-store",signal:AbortSignal.timeout(1500)}),d=await r.json();fallos=0;
+  $("estado").className="on";
+  const up=d.uptime,t=`${Math.floor(up/3600)}h ${Math.floor(up%3600/60)}m ${up%60}s`;
+  const fila=(a,b)=>`<div class="cl"><span>${a}</span><b>${b}</b></div>`;
+  $("tel").innerHTML=fila("IP",d.ip)+fila("Señal WiFi",d.rssi+" dBm")+fila("Encendida",t)+fila("FPS del video",d.fps)+fila("Resolución",d.w+"×"+d.h)+fila("Temperatura del chip",`<span style="color:${d.temp>=75?"var(--rj)":d.temp>=65?"var(--wa)":"inherit"}">${d.temp.toFixed(1)} °C${d.temp>=75?" ⚠ muy alta":d.temp>=65?" ⚠ alta":""}</span>`)
+   +fila("Memoria libre",Math.round(d.heap/1024)+" KB")+fila("PSRAM libre",Math.round(d.psram/1024)+" KB")
+   +fila("Aceptadas / Rechazadas",d.acept+" / "+d.rech)+fila("Servo",d.srv+"°")+fila("Último comando",d.ultimo==="-"?"—":d.ultimo+" (hace "+(d.hace/1000).toFixed(1)+" s)");
+  if(ultCmds>=0&&d.cmds>ultCmds)log("ESP32 recibió comando: "+d.ultimo);
+  ultCmds=d.cmds;
+ }catch(e){if(++fallos>=3){$("estado").className="";$("tel").innerHTML="<small>Sin conexión con la ESP32.</small>";ultCmds=-1}}}
+setInterval(telemetria,500);
+let svT=0;$("sv").oninput=e=>{const a=e.target.value;$("svv").textContent=a+"°";if(base&&Date.now()-svT>120){svT=Date.now();fetch(base+"/servo?a="+a,{signal:AbortSignal.timeout(1500)}).catch(()=>{})}};
+$("sv").onchange=e=>{if(base)fetch(base+"/servo?a="+e.target.value,{signal:AbortSignal.timeout(1500)}).catch(()=>{})};
+
+/* ---------- USB opcional (envía A/R y muestra lo que imprime la ESP) ---------- */
+$("bs").onclick=async()=>{try{const p=await navigator.serial.requestPort();await p.open({baudRate:115200});writer=p.writable.getWriter();$("bs").textContent="USB conectado";
+ (async()=>{const dec=new TextDecoderStream();p.readable.pipeTo(dec.writable);const rd=dec.readable.getReader();let buf="";
+  while(true){const{value,done}=await rd.read();if(done)break;buf+=value;let i;while((i=buf.indexOf("\n"))>=0){const s=buf.slice(0,i).trim();buf=buf.slice(i+1);if(s)log("USB: "+s)}}})()
+ }catch(e){$("st").textContent="Serial no disponible (usa Chrome o Edge en PC): "+e.message}};
+function send(c,clase){
+ if(writer)writer.write(new TextEncoder().encode(c+"\n"));
+ const ex=(c==="A"&&clase)?"&d="+parseInt(clase)+"&t="+(clase.includes("antigua")?"A":"N"):"";   // denominación y tipo para el servo
+ if(base)fetch(base+"/cmd?c="+c+ex,{cache:"no-store",signal:AbortSignal.timeout(1500)}).then(r=>r.json()).then(d=>log("Enviado "+c+" → ESP32 respondió "+JSON.stringify(d))).catch(()=>log("No se pudo enviar "+c+" a la ESP32"))}
+
+/* ---------- Guardar / cargar entrenamiento ---------- */
+function guardar(){const d=knn.getClassifierDataset(),o={};for(const k in d)o[k]={s:d[k].shape,v:Array.from(d[k].dataSync())};localStorage.setItem("monedas",JSON.stringify({o,num}));$("st").textContent="Guardado en este navegador."}
+$("bg").onclick=guardar;
+$("bl").onclick=()=>{const j=JSON.parse(localStorage.getItem("monedas")||"null");if(!j)return $("st").textContent="No hay datos guardados.";const d={};for(const k in j.o)d[k]=tf.tensor(j.o[k].v,j.o[k].s);knn.setClassifierDataset(d);Object.assign(num,j.num);for(const k in num)$("n_"+k).textContent=num[k];$("st").textContent="Datos cargados."};
+$("bb").onclick=()=>{if(confirm("¿Borrar todos los ejemplos?")){knn.clearAllClasses();for(const k in num){num[k]=0;$("n_"+k).textContent=0}}};
+
+/* ---------- Reconocimiento ---------- */
+async function leer(){if(!listo()||!knn.getNumClasses())return null;
+ try{const e=tf.tidy(()=>net.infer(v,true)),r=await knn.predictClass(e,5);e.dispose();return{l:r.label,c:r.confidences[r.label]}}catch(e){return null}}
+function live(r){$("live").textContent=r.l===VACIA?"Veo: banda vacía":`Veo: ${r.l} (${Math.round(r.c*100)}%)`;$("bi").style.width=Math.round(r.c*100)+"%"}
+function decidir(l,c){const ok=l!==OTRO&&c>=UMBRAL;
+ $("res").className=ok?"ok":"no";$("res").textContent=ok?`${l} (${Math.round(c*100)}%)`:`Rechazada: ${l===OTRO?l:"no segura ("+Math.round(c*100)+"%)"}`;
+ flash(ok?"fl":"rj");send(ok?"A":"R",ok?l:"");const k=ok?l:"Rechazadas";tot[k]=(tot[k]||0)+1;
+ $("cnt").innerHTML=Object.entries(tot).map(([a,b])=>`<div class="cl"><span>${a}</span><b>${b}</b></div>`).join("")}
+$("bn").onclick=async()=>{busy=true;try{const vt={},cs={};
+ for(let i=0;i<5;i++){const r=await leer();if(!r){$("st").textContent="Falta video o entrenamiento.";return}vt[r.l]=(vt[r.l]||0)+1;cs[r.l]=(cs[r.l]||0)+r.c;await wait(120)}
+ const l=Object.keys(vt).sort((a,b)=>vt[b]-vt[a])[0],c=cs[l]/vt[l];
+ if(l===VACIA){$("res").className="no";$("res").textContent="No veo ninguna moneda";return}
+ decidir(l,c)}finally{busy=false}};
+$("bt").onclick=()=>{run=!run;armed=true;cand=null;n=0;$("bt").textContent="Modo automático: "+(run?"encendido":"apagado");
+ if(run&&!num[VACIA])$("st").textContent="Aviso: entrena “Banda vacía” para que el modo automático sepa cuándo llega una moneda nueva."};
+function paso(r){if(r.l===VACIA){armed=true;cand=null;n=0;$("st").textContent="Banda vacía: esperando moneda.";return}
+ if(!armed){$("st").textContent="Moneda ya leída. Retírala para leer la siguiente.";return}
+ if(r.l===cand)n++;else{cand=r.l;n=1}
+ $("st").textContent=`Moneda detectada, confirmando ${Math.min(n,3)}/3…`;
+ if(n>=3){armed=false;decidir(r.l,r.c)}}
+setInterval(async()=>{if(busy)return;busy=true;try{const r=await leer();if(r){live(r);if(run)paso(r)}}finally{busy=false}},150);
+</script></body></html>
