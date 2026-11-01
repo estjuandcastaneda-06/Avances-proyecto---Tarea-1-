@@ -1,18 +1,3 @@
-/*
-  ESP32-S3 + cámara  ->  servidor para el clasificador de monedas
-  --------------------------------------------------------------
-  Puerto 80  : /status  (JSON con datos en tiempo real)
-               /cmd?c=A (aceptada)  /cmd?c=R (rechazada)  <- los envía el HTML
-  Puerto 81  : /stream  (video MJPEG que el HTML usa para reconocer monedas)
-
-  Arduino IDE (core "esp32" de Espressif 3.x):
-    Placa ............ ESP32S3 Dev Module
-    PSRAM ............ OPI PSRAM (N16R8)  /  QSPI PSRAM (N8R2, N4R2)
-    USB CDC On Boot .. Enabled   (para ver el Serial por el puerto USB)
-    Flash Size ....... la de tu placa (ej. 16MB)
-    Partition Scheme . 8MB with spiffs  (o Huge APP si tu flash es menor)
-*/
-
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <ESPmDNS.h>
@@ -27,7 +12,6 @@ const char* WIFI_PASS = "TU_CLAVE";
 #define PIN_RECHAZAR  2
 #define PULSO_MS      300
 
-// ---- Ajustes para que la cámara y el chip se calienten menos ----
 #define FPS_MAX       10         // máximo de cuadros por segundo del stream (menos = más frío)
 #define CAM_XCLK_HZ   10000000   // reloj de la cámara: 10 MHz (antes 20 MHz). Baja calor y ruido
 #define CPU_MHZ       160        // CPU del ESP32-S3 (antes 240 MHz). 80 si aún se calienta
@@ -53,7 +37,7 @@ const int SERVO_ANG[5][2] = {{20,20}, {45,45}, {70,70}, {110,110}, {135,135}};
 
 #define VOLTEAR_VERTICAL    0   // pon 1 si la imagen sale al revés
 #define VOLTEAR_HORIZONTAL  0   // pon 1 si sale en espejo
-// ==========================================================
+
 
 #if CAM_MODELO_A
   #define PWDN_GPIO_NUM  -1
@@ -100,7 +84,7 @@ httpd_handle_t srvControl = NULL;
 httpd_handle_t srvStream  = NULL;
 
 volatile uint32_t frames = 0;
-volatile bool streamActivo = false;   // true mientras el HTML está viendo el video
+volatile bool streamActivo = false;   
 uint32_t framesPrev = 0, fps = 0, tFps = 0;
 uint32_t nAceptadas = 0, nRechazadas = 0, nComandos = 0;
 char ultimoCmd = '-';
@@ -108,10 +92,10 @@ uint32_t tUltimoCmd = 0;
 uint32_t finPulsoAceptar = 0, finPulsoRechazar = 0;
 int frameW = 0, frameH = 0;
 
-// ---------------------------------------------------------
+
 bool iniciarCamara() {
   camera_config_t config;
-  config.ledc_channel = LEDC_CHANNEL_7;   // canal/timer altos: el servo usa los bajos
+  config.ledc_channel = LEDC_CHANNEL_7;   
   config.ledc_timer   = LEDC_TIMER_3;
   config.pin_d0 = Y2_GPIO_NUM;  config.pin_d1 = Y3_GPIO_NUM;
   config.pin_d2 = Y4_GPIO_NUM;  config.pin_d3 = Y5_GPIO_NUM;
@@ -133,7 +117,7 @@ bool iniciarCamara() {
   config.grab_mode = CAMERA_GRAB_LATEST;  // siempre el frame más reciente
   config.fb_count = 2;
 
-  if (!psramFound()) {                    // sin PSRAM
+  if (!psramFound()) {                  
     config.fb_location = CAMERA_FB_IN_DRAM;
     config.fb_count = 1;
   }
@@ -151,7 +135,6 @@ bool iniciarCamara() {
   return true;
 }
 
-// ---------------------------------------------------------
 // Servo guía (cola de eventos: varias monedas en la banda no se pisan)
 struct EventoServo { uint32_t t; int ang; };
 EventoServo colaServo[8];
@@ -195,7 +178,6 @@ void servoPorMoneda(int, char) {}
 void servoLoop() {}
 #endif
 
-// ---------------------------------------------------------
 static esp_err_t streamHandler(httpd_req_t* req) {
   char part[64];
   esp_err_t res = httpd_resp_set_type(req, STREAM_TYPE);
@@ -219,7 +201,7 @@ static esp_err_t streamHandler(httpd_req_t* req) {
     if (res == ESP_OK) res = httpd_resp_send_chunk(req, part, hlen);
     if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
     esp_camera_fb_return(fb);
-    if (res != ESP_OK) break;     // el navegador cerró la conexión
+    if (res != ESP_OK) break;   
     frames++;
   }
   streamActivo = false;
@@ -274,7 +256,7 @@ static esp_err_t cmdHandler(httpd_req_t* req) {
   return httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
 }
 
-static esp_err_t servoHandler(httpd_req_t* req) {   // /servo?a=90  (para calibrar los grados)
+static esp_err_t servoHandler(httpd_req_t* req) {  
   char q[24] = {0}, val[8] = {0};
   if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK)
     httpd_query_key_value(q, "a", val, sizeof(val));
@@ -306,7 +288,7 @@ void iniciarServidores() {
     httpd_register_uri_handler(srvStream, &uStream);
 }
 
-// ---------------------------------------------------------
+
 void setup() {
   setCpuFrequencyMhz(CPU_MHZ);
   Serial.begin(115200);
@@ -314,7 +296,7 @@ void setup() {
   pinMode(PIN_ACEPTAR, OUTPUT);  digitalWrite(PIN_ACEPTAR, LOW);
   pinMode(PIN_RECHAZAR, OUTPUT); digitalWrite(PIN_RECHAZAR, LOW);
 
-  servoIniciar();   // después de configurar los pines de salida
+  servoIniciar();   
   if (!iniciarCamara()) { Serial.println("Camara fallo. Revisa el modelo de pines."); while (true) delay(1000); }
 
   WiFi.mode(WIFI_STA);
@@ -338,12 +320,12 @@ void loop() {
   servoLoop();
   uint32_t ahora = millis();
 
-  if (!streamActivo) {                        // nadie viendo el video: se vacía el buffer para evitar FB-OVF
+  if (!streamActivo) {                       
     camera_fb_t* fb = esp_camera_fb_get();
     if (fb) esp_camera_fb_return(fb);
   }
 
-  if (ahora - tFps >= 1000) {                 // FPS reales del stream
+  if (ahora - tFps >= 1000) {           
     fps = frames - framesPrev; framesPrev = frames; tFps = ahora;
   }
   if (finPulsoAceptar  && (int32_t)(ahora - finPulsoAceptar)  >= 0) { digitalWrite(PIN_ACEPTAR, LOW);  finPulsoAceptar  = 0; }
